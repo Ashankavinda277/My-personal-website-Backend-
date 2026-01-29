@@ -1,11 +1,33 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from src.database.connection import get_db
 from src.models.schemas import BlogCreate, BlogUpdate
 from src.auth.deps import get_current_user, require_admin
 from bson import ObjectId
 from datetime import datetime
+import os
+import uuid
+import io
+from pathlib import Path
+import cloudinary
+import cloudinary.uploader
 
 router = APIRouter()
+
+# configure cloudinary from environment if available
+_cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+_cloud_key = os.environ.get("CLOUDINARY_API_KEY")
+_cloud_secret = os.environ.get("CLOUDINARY_API_SECRET")
+if _cloud_name and _cloud_key and _cloud_secret:
+    cloudinary.config(
+        cloud_name=_cloud_name,
+        api_key=_cloud_key,
+        api_secret=_cloud_secret,
+        secure=True,
+    )
+
+# directory to store uploaded files (served from /uploads) - kept for backward compatibility
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 def _doc_to_dict(doc):
     if not doc:
@@ -15,9 +37,71 @@ def _doc_to_dict(doc):
     return doc
 
 @router.get("/")
-def list_blogs(db=Depends(get_db)):
-    docs = list(db.blogs.find().sort("created_at", -1))
+def list_blogs(type: str | None = Query(None), db=Depends(get_db)):
+    query = {}
+    if type:
+        query["type"] = type
+    docs = list(db.blogs.find(query).sort("created_at", -1))
     return {"items": [_doc_to_dict(d) for d in docs]}
+
+
+@router.get("/types")
+def list_types(db=Depends(get_db)):
+    docs = list(db.types.find().sort("name", 1))
+    return {"items": [{"id": str(d["_id"]), "name": d["name"], "image": d.get("image")} for d in docs]}
+
+
+@router.post("/types", status_code=201)
+def create_type(
+    name: str = Form(...), 
+    image: UploadFile | None = File(None),
+    user=Depends(require_admin), 
+    db=Depends(get_db)
+):
+    if db.types.find_one({"name": name}):
+        raise HTTPException(status_code=400, detail="Type already exists")
+    
+    image_url = None
+    if image:
+        try:
+            if _cloud_name and _cloud_key and _cloud_secret:
+                contents = image.file.read()
+                public_id = f"concepts_type/{uuid.uuid4().hex}"
+                result = cloudinary.uploader.upload(
+                    io.BytesIO(contents),
+                    public_id=public_id,
+                    folder="concepts_type",
+                    resource_type="image",
+                )
+                image_url = result.get("secure_url") or result.get("url")
+            else:
+                ext = Path(image.filename).suffix
+                filename = f"type_{uuid.uuid4().hex}{ext}"
+                dest = UPLOAD_DIR / filename
+                with dest.open("wb") as f:
+                    f.write(image.file.read())
+                image_url = f"/uploads/{filename}"
+        except Exception:
+            image_url = None
+
+    res = db.types.insert_one({
+        "name": name, 
+        "image": image_url,
+        "created_by": user["username"], 
+        "created_at": datetime.utcnow()
+    })
+    return {"id": str(res.inserted_id), "name": name, "image": image_url}
+
+@router.delete("/types/{type_id}", status_code=204)
+def delete_type(type_id: str, user=Depends(require_admin), db=Depends(get_db)):
+    try:
+        oid = ObjectId(type_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid type id")
+    result = db.types.delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Type not found")
+    return {}
 
 @router.get("/{blog_id}")
 def get_blog(blog_id: str, db=Depends(get_db)):
@@ -30,29 +114,119 @@ def get_blog(blog_id: str, db=Depends(get_db)):
     return _doc_to_dict(doc)
 
 @router.post("/", status_code=201)
-def create_blog(payload: BlogCreate, user = Depends(require_admin), db=Depends(get_db)):
-    doc = payload.dict()
-    doc.update({
+def create_blog(
+    title: str = Form(...),
+    content: str = Form(...),
+    tags: str | None = Form(None),
+    type: str | None = Form(None),
+    cover: UploadFile | None = File(None),
+    user = Depends(require_admin),
+    db=Depends(get_db)
+):
+    # handle tags (comma separated)
+    tag_list = []
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+    cover_url = None
+    if cover:
+        # If Cloudinary is configured, upload to Cloudinary and use the returned URL
+        try:
+            if _cloud_name and _cloud_key and _cloud_secret:
+                # read bytes and upload
+                contents = cover.file.read()
+                public_id = f"concepts_blog/{uuid.uuid4().hex}"
+                result = cloudinary.uploader.upload(
+                    io.BytesIO(contents),
+                    public_id=public_id,
+                    folder="concepts_blog",
+                    resource_type="image",
+                )
+                cover_url = result.get("secure_url") or result.get("url")
+            else:
+                # fallback to local storage
+                ext = Path(cover.filename).suffix
+                filename = f"{uuid.uuid4().hex}{ext}"
+                dest = UPLOAD_DIR / filename
+                with dest.open("wb") as f:
+                    f.write(cover.file.read())
+                cover_url = f"/uploads/{filename}"
+        except Exception:
+            # don't crash on upload failure; store None
+            cover_url = None
+
+    doc = {
+        "title": title,
+        "content": content,
+        "tags": tag_list,
+        "cover_image": cover_url,
+        "type": type,
         "author": user["username"],
         "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    })
+        "updated_at": datetime.utcnow(),
+    }
     res = db.blogs.insert_one(doc)
     return {"id": str(res.inserted_id)}
 
 @router.put("/{blog_id}")
-def update_blog(blog_id: str, payload: BlogUpdate, user = Depends(require_admin), db=Depends(get_db)):
+def update_blog(
+    blog_id: str,
+    title: str | None = Form(None),
+    content: str | None = Form(None),
+    type: str | None = Form(None),
+    cover: UploadFile | None = File(None),
+    user = Depends(require_admin),
+    db=Depends(get_db)
+):
     try:
         oid = ObjectId(blog_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid blog id")
-    doc = {k: v for k, v in payload.dict().items() if v is not None}
-    if not doc:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    doc["updated_at"] = datetime.utcnow()
-    result = db.blogs.update_one({"_id": oid}, {"$set": doc})
-    if result.matched_count == 0:
+    
+    # Check if blog exists first
+    existing_blog = db.blogs.find_one({"_id": oid})
+    if not existing_blog:
         raise HTTPException(status_code=404, detail="Blog not found")
+
+    update_data = {}
+    if title is not None:
+        update_data["title"] = title
+    if content is not None:
+        update_data["content"] = content
+    if type is not None:
+        update_data["type"] = type
+
+    if cover:
+        # Handle new image upload
+        try:
+            if _cloud_name and _cloud_key and _cloud_secret:
+                contents = cover.file.read()
+                public_id = f"concepts_blog/{uuid.uuid4().hex}"
+                result = cloudinary.uploader.upload(
+                    io.BytesIO(contents),
+                    public_id=public_id,
+                    folder="concepts_blog",
+                    resource_type="image",
+                )
+                cover_url = result.get("secure_url") or result.get("url")
+                update_data["cover_image"] = cover_url
+            else:
+                ext = Path(cover.filename).suffix
+                filename = f"{uuid.uuid4().hex}{ext}"
+                dest = UPLOAD_DIR / filename
+                with dest.open("wb") as f:
+                    f.write(cover.file.read())
+                update_data["cover_image"] = f"/uploads/{filename}"
+        except Exception:
+            pass # Keep old image if upload fails
+
+    if not update_data:
+         # If nothing provided to update, just return success
+        return {"status": "no changes"}
+
+    update_data["updated_at"] = datetime.utcnow()
+    db.blogs.update_one({"_id": oid}, {"$set": update_data})
+    
     return {"status": "updated"}
 
 @router.delete("/{blog_id}", status_code=204)

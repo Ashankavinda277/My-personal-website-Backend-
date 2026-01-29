@@ -5,3 +5,6 @@ python-dotenv
 python-jose[cryptography]
 passlib[bcrypt]
 pydantic
+python-multipart
+cloudinary
+dnspython
