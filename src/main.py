@@ -1,11 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
 from src.auth.routes import router as auth_router
 from src.blog.routes import router as blog_router
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 app = FastAPI(title="Concepts Blog API")
 
@@ -18,8 +23,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Custom exception handler to prevent binary data in error responses
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for error in exc.errors():
+        # Remove binary data from error messages
+        error_dict = {
+            "loc": error["loc"],
+            "msg": error["msg"],
+            "type": error["type"]
+        }
+        # Don't include the actual input data if it might be binary
+        if "input" in error and error["loc"][-1] != "image":
+            error_dict["input"] = error["input"]
+        errors.append(error_dict)
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": errors}
+    )
+
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(blog_router, prefix="/blogs", tags=["blogs"])
+
+# ensure uploads directory exists and serve it
+uploads_dir = Path("uploads")
+uploads_dir.mkdir(exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
 @app.get("/")
 def root():
