@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Q
 from src.database.connection import get_db
 from src.models.schemas import BlogCreate, BlogUpdate
 from src.auth.deps import get_current_user, require_admin
+from src.utils.cloudinary_upload import upload_image_to_cloudinary, delete_image_from_cloudinary
 from bson import ObjectId
 from datetime import datetime
 import os
@@ -166,7 +167,7 @@ def create_blog(
         "updated_at": datetime.utcnow(),
     }
     res = db.blogs.insert_one(doc)
-    return {"id": str(res.inserted_id)}
+    return {"id": str(res.inserted_id), "image_url": image_url}
 
 @router.put("/{blog_id}")
 def update_blog(
@@ -235,7 +236,18 @@ def delete_blog(blog_id: str, user = Depends(require_admin), db=Depends(get_db))
         oid = ObjectId(blog_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid blog id")
-    result = db.blogs.delete_one({"_id": oid})
-    if result.deleted_count == 0:
+    
+    # Get blog to delete image from Cloudinary
+    blog = db.blogs.find_one({"_id": oid})
+    if not blog:
         raise HTTPException(status_code=404, detail="Blog not found")
+    
+    # Delete image from Cloudinary if exists
+    if blog.get("image_public_id"):
+        try:
+            delete_image_from_cloudinary(blog["image_public_id"])
+        except Exception:
+            pass  # Continue even if image deletion fails
+    
+    result = db.blogs.delete_one({"_id": oid})
     return {}
