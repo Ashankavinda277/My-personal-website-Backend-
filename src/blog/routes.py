@@ -118,13 +118,15 @@ def create_blog(
     res = db.blogs.insert_one(doc)
     return {"id": str(res.inserted_id)}
 
+from typing import Optional
+
 @router.put("/{blog_id}")
 def update_blog(
     blog_id: str,
     title: str = Form(None),
     content: str = Form(None),
     type: str = Form(None),
-    cover: UploadFile = File(None),
+    cover: Optional[UploadFile] = File(None),
     user = Depends(require_admin), 
     db=Depends(get_db)
 ):
