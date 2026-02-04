@@ -14,10 +14,40 @@ def _doc_to_dict(doc):
     doc.pop("_id", None)
     return doc
 
+@router.get("/types")
+def list_types(db=Depends(get_db)):
+    types = db.blogs.distinct("type")
+    # Filter out None/empty types if needed
+    clean_types = [t for t in types if t]
+    # Return as list of objects to match frontend expectations if necessary, 
+    # or just simple list. Frontend 'Category' interface expects {id, name, image}.
+    # We'll return simple objects for now.
+    return {"items": [{"id": t, "name": t} for t in clean_types]}
+
 @router.get("/")
-def list_blogs(db=Depends(get_db)):
-    docs = list(db.blogs.find().sort("created_at", -1))
-    return {"items": [_doc_to_dict(d) for d in docs]}
+def list_blogs(
+    type: str = None, 
+    page: int = 1, 
+    limit: int = 100, 
+    db=Depends(get_db)
+):
+    query = {}
+    if type and type != "All":
+        query["type"] = type
+
+    skip = (page - 1) * limit
+    
+    total = db.blogs.count_documents(query)
+    cursor = db.blogs.find(query).sort("created_at", -1).skip(skip).limit(limit)
+    docs = list(cursor)
+    
+    return {
+        "items": [_doc_to_dict(d) for d in docs],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
 
 @router.get("/{blog_id}")
 def get_blog(blog_id: str, db=Depends(get_db)):
