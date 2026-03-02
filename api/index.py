@@ -1,41 +1,41 @@
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import os
+import sys
+
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 load_dotenv()
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-
 from src.auth.routes import router as auth_router
 from src.blog.routes import router as blog_router
 from src.contact.routes import router as contact_router
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
 app = FastAPI(title="Concepts Blog API")
 
-# CORS - adjust origins in production
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Custom exception handler to prevent binary data in error responses
+# Custom exception handler
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = []
     for error in exc.errors():
-        # Remove binary data from error messages
         error_dict = {
             "loc": error["loc"],
             "msg": error["msg"],
             "type": error["type"]
         }
-        # Don't include the actual input data if it might be binary
         if "input" in error and error["loc"][-1] != "image":
             error_dict["input"] = error["input"]
         errors.append(error_dict)
@@ -49,15 +49,6 @@ app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(blog_router, prefix="/blogs", tags=["blogs"])
 app.include_router(contact_router, prefix="/contact", tags=["contact"])
 
-# ensure uploads directory exists and serve it
-uploads_dir = Path("uploads")
-uploads_dir.mkdir(exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
-
 @app.get("/")
 def root():
     return {"message": "Concepts Blog API running 🚀"}
-
-# For Vercel serverless deployment
-from mangum import Mangum
-handler = Mangum(app)
