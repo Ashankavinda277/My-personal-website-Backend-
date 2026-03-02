@@ -5,6 +5,8 @@ python-dotenv
 python-jose[cryptography]
 passlib[bcrypt]
 pydantic
+pydantic[email]
+email-validator
 cloudinary
 python-multipart
 dnspython
