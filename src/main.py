@@ -57,3 +57,6 @@ app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 @app.get("/")
 def root():
     return {"message": "Concepts Blog API running 🚀"}
+
+# Vercel serverless handler
+handler = app
