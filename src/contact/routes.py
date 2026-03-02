@@ -54,6 +54,11 @@ def get_contact_messages(db=Depends(get_db)):
         messages = []
         for msg in db.contact_messages.find().sort("submitted_at", -1):
             msg["_id"] = str(msg["_id"])
+            # Ensure datetime is properly serialized as ISO format string
+            if "submitted_at" in msg and msg["submitted_at"]:
+                msg["submitted_at"] = msg["submitted_at"].isoformat() + "Z"
+            if "replied_at" in msg and msg["replied_at"]:
+                msg["replied_at"] = msg["replied_at"].isoformat() + "Z"
             messages.append(msg)
         
         return {"messages": messages, "count": len(messages)}
