@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from src.auth.routes import router as auth_router
 from src.blog.routes import router as blog_router
+from src.contact.routes import router as contact_router
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
@@ -46,6 +47,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(blog_router, prefix="/blogs", tags=["blogs"])
+app.include_router(contact_router, prefix="/contact", tags=["contact"])
 
 # ensure uploads directory exists and serve it
 uploads_dir = Path("uploads")

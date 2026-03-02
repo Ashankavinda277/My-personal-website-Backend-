@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 
 
@@ -16,3 +16,10 @@ class BlogUpdate(BaseModel):
     tags: Optional[List[str]]
     cover_image: Optional[str]
     type: Optional[str]
+
+
+class ContactMessage(BaseModel):
+    name: str
+    email: EmailStr
+    subject: str
+    message: str
