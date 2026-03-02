@@ -161,6 +161,44 @@ def get_blog(blog_id: str, db=Depends(get_db)):
         raise HTTPException(status_code=404, detail="Blog not found")
     return _doc_to_dict(doc)
 
+@router.post("/upload-image", status_code=201)
+def upload_image(
+    cover: UploadFile = File(...),
+    user = Depends(require_admin),
+):
+    """
+    Upload an image for use in blog content (rich text editor).
+    Returns the image URL.
+    """
+    try:
+        if _cloud_name and _cloud_key and _cloud_secret:
+            # Upload to Cloudinary
+            contents = cover.file.read()
+            public_id = f"concepts_blog/content/{uuid.uuid4().hex}"
+            result = cloudinary.uploader.upload(
+                io.BytesIO(contents),
+                public_id=public_id,
+                folder="concepts_blog/content",
+                resource_type="image",
+            )
+            image_url = result.get("secure_url") or result.get("url")
+        else:
+            # Fallback to local storage - return full URL
+            ext = Path(cover.filename).suffix
+            filename = f"{uuid.uuid4().hex}{ext}"
+            dest = UPLOAD_DIR / filename
+            UPLOAD_DIR.mkdir(exist_ok=True)  # Ensure uploads directory exists
+            with dest.open("wb") as f:
+                f.write(cover.file.read())
+            # Return full URL for local uploads (accessible from frontend)
+            image_url = f"http://127.0.0.1:8000/uploads/{filename}"
+        
+        return {"url": image_url, "image_url": image_url}
+    except Exception as e:
+        print(f"Image upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
 @router.post("/", status_code=201)
 def create_blog(
     title: str = Form(...),
