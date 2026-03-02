@@ -58,5 +58,6 @@ app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 def root():
     return {"message": "Concepts Blog API running 🚀"}
 
-# Vercel serverless handler
-handler = app
+# For Vercel serverless deployment
+from mangum import Mangum
+handler = Mangum(app)
