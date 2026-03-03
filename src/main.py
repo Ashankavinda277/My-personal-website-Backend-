@@ -59,5 +59,8 @@ def root():
     return {"message": "Concepts Blog API running 🚀"}
 
 # For Vercel serverless deployment
-from mangum import Mangum
-handler = Mangum(app)
+try:
+    from mangum import Mangum
+    handler = Mangum(app)
+except ImportError:
+    handler = None
