@@ -11,3 +11,4 @@ cloudinary
 python-multipart
 dnspython
 mangum
+httpx

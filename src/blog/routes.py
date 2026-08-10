@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import Response, StreamingResponse
+import httpx
 from src.database.connection import get_db
 from src.models.schemas import BlogCreate, BlogUpdate
 from src.auth.deps import get_current_user, require_admin
@@ -161,6 +163,60 @@ def get_blog(blog_id: str, db=Depends(get_db)):
         raise HTTPException(status_code=404, detail="Blog not found")
     return _doc_to_dict(doc)
 
+
+@router.get("/{blog_id}/og-image")
+async def get_og_image(blog_id: str, db=Depends(get_db)):
+    """
+    Proxy endpoint that serves the blog's cover image with no-cache headers.
+    LinkedIn and other crawlers will always get the freshest image from this URL.
+    """
+    try:
+        doc = db.blogs.find_one({"_id": ObjectId(blog_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid blog id")
+    if not doc or not doc.get("cover_image"):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    image_url = doc["cover_image"]
+    # Resolve relative URLs
+    if not image_url.startswith("http"):
+        # Local file — read from disk
+        local_path = Path(image_url.lstrip("/"))
+        if not local_path.exists():
+            raise HTTPException(status_code=404, detail="Image file not found")
+        content = local_path.read_bytes()
+        ext = local_path.suffix.lower()
+        media_type = {
+            ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".png": "image/png", ".webp": "image/webp",
+            ".gif": "image/gif",
+        }.get(ext, "image/jpeg")
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
+    # Remote URL (Cloudinary etc.) — proxy it
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(image_url)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to fetch image")
+        content_type = resp.headers.get("content-type", "image/jpeg")
+        return Response(
+            content=resp.content,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
 @router.post("/upload-image", status_code=201)
 def upload_image(
     cover: UploadFile = File(...),
@@ -297,6 +353,7 @@ def update_blog(
                     public_id=public_id,
                     folder="concepts_blog",
                     resource_type="image",
+                    invalidate=True,  # Bust Cloudinary CDN cache
                 )
                 cover_url = result.get("secure_url") or result.get("url")
                 update_data["cover_image"] = cover_url
