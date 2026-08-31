@@ -9,6 +9,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 load_dotenv()
 
+# Must run before any request is parsed: lifts Starlette's 1 MB cap on
+# non-file form fields so long blog posts can be submitted.
+from src.utils.form_limits import apply_multipart_limits
+
+apply_multipart_limits()
+
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from src.auth.routes import router as auth_router
