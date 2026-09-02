@@ -112,64 +112,81 @@ def list_blogs(
     }
 
 
-@router.get("/types")
-def list_types(db=Depends(get_db)):
-    docs = list(db.types.find().sort("name", 1))
-    return {"items": [{"id": str(d["_id"]), "name": d["name"], "image": d.get("image")} for d in docs]}
+# A blog series is a name shared by a set of posts plus a part number on each
+# post (set via series_name/series_part on the blog document itself). Kept as
+# its own collection - same shape as types/categories above - so the admin UI
+# offers a dropdown of existing series instead of free text, and a rename
+# updates every post in one place instead of relying on everyone typing the
+# exact same string.
+
+@router.get("/series")
+def list_series(db=Depends(get_db)):
+    docs = list(db.series.find().sort("name", 1))
+    return {"items": [{"id": str(d["_id"]), "name": d["name"]} for d in docs]}
 
 
-@router.post("/types", status_code=201)
-def create_type(
-    name: str = Form(...), 
-    image: UploadFile | None = File(None),
-    user=Depends(require_admin), 
-    db=Depends(get_db)
-):
-    if db.types.find_one({"name": name}):
-        raise HTTPException(status_code=400, detail="Type already exists")
-    
-    image_url = None
-    if image:
-        try:
-            if _cloud_name and _cloud_key and _cloud_secret:
-                contents = image.file.read()
-                public_id = f"concepts_type/{uuid.uuid4().hex}"
-                result = cloudinary.uploader.upload(
-                    io.BytesIO(contents),
-                    public_id=public_id,
-                    folder="concepts_type",
-                    resource_type="image",
-                )
-                image_url = result.get("secure_url") or result.get("url")
-            else:
-                ext = Path(image.filename).suffix
-                filename = f"type_{uuid.uuid4().hex}{ext}"
-                dest = UPLOAD_DIR / filename
-                _ensure_upload_dir()
-                with dest.open("wb") as f:
-                    f.write(image.file.read())
-                image_url = f"/uploads/{filename}"
-        except Exception:
-            image_url = None
-
-    res = db.types.insert_one({
-        "name": name, 
-        "image": image_url,
-        "created_by": user["username"], 
-        "created_at": datetime.utcnow()
+@router.post("/series", status_code=201)
+def create_series(name: str = Form(...), user=Depends(require_admin), db=Depends(get_db)):
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Series name is required")
+    existing = db.series.find_one({"name": name})
+    if existing:
+        return {"id": str(existing["_id"]), "name": existing["name"]}
+    res = db.series.insert_one({
+        "name": name,
+        "created_by": user["username"],
+        "created_at": datetime.utcnow(),
     })
-    return {"id": str(res.inserted_id), "name": name, "image": image_url}
+    return {"id": str(res.inserted_id), "name": name}
 
-@router.delete("/types/{type_id}", status_code=204)
-def delete_type(type_id: str, user=Depends(require_admin), db=Depends(get_db)):
+
+@router.put("/series/{series_id}")
+def rename_series(series_id: str, name: str = Form(...), user=Depends(require_admin), db=Depends(get_db)):
     try:
-        oid = ObjectId(type_id)
+        oid = ObjectId(series_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid type id")
-    result = db.types.delete_one({"_id": oid})
+        raise HTTPException(status_code=400, detail="Invalid series id")
+    existing = db.series.find_one({"_id": oid})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Series not found")
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Series name is required")
+    old_name = existing["name"]
+    db.series.update_one({"_id": oid}, {"$set": {"name": new_name}})
+    if old_name != new_name:
+        # Keep every post's series_name pointed at the renamed series instead
+        # of silently splitting it into "old name" and "new name" groups.
+        db.blogs.update_many({"series_name": old_name}, {"$set": {"series_name": new_name}})
+    return {"status": "updated", "name": new_name}
+
+
+@router.delete("/series/{series_id}", status_code=204)
+def delete_series(series_id: str, user=Depends(require_admin), db=Depends(get_db)):
+    try:
+        oid = ObjectId(series_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid series id")
+    result = db.series.delete_one({"_id": oid})
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Type not found")
+        raise HTTPException(status_code=404, detail="Series not found")
     return {}
+
+
+@router.get("/series/{series_name}/posts")
+def list_series_posts(series_name: str, db=Depends(get_db)):
+    """Ordered parts of a series, for prev/next navigation on the post page."""
+    cursor = db.blogs.find(
+        {"series_name": series_name},
+        {"title": 1, "series_part": 1},
+    ).sort([("series_part", 1), ("created_at", 1)])
+    items = [
+        {"id": str(d["_id"]), "title": d["title"], "series_part": d.get("series_part")}
+        for d in cursor
+    ]
+    return {"items": items}
+
 
 @router.get("/{blog_id}")
 def get_blog(blog_id: str, db=Depends(get_db)):
@@ -279,6 +296,8 @@ def create_blog(
     content: str = Form(...),
     tags: str = Form(None),
     type: str = Form(None),
+    series_name: str = Form(None),
+    series_part: str = Form(None),
     cover: UploadFile = File(None),
     user = Depends(require_admin),
     db=Depends(get_db)
@@ -287,6 +306,15 @@ def create_blog(
     tag_list = []
     if tags:
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+    # series_part arrives as a form string (possibly empty) rather than an
+    # int so a blank value doesn't fail FastAPI's request validation.
+    series_part_value = None
+    if series_part:
+        try:
+            series_part_value = int(series_part)
+        except ValueError:
+            series_part_value = None
 
     cover_url = None
     if cover:
@@ -323,6 +351,8 @@ def create_blog(
         "tags": tag_list,
         "cover_image": cover_url,
         "type": type,
+        "series_name": series_name or None,
+        "series_part": series_part_value,
         "author": user["username"],
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
@@ -339,6 +369,8 @@ def update_blog(
     title: str = Form(None),
     content: str = Form(None),
     type: str = Form(None),
+    series_name: str = Form(None),
+    series_part: str = Form(None),
     cover: Optional[UploadFile] = File(None),
     user = Depends(require_admin),
     db=Depends(get_db)
@@ -347,7 +379,7 @@ def update_blog(
         oid = ObjectId(blog_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid blog id")
-    
+
     # Check if blog exists first
     existing_blog = db.blogs.find_one({"_id": oid})
     if not existing_blog:
@@ -360,6 +392,20 @@ def update_blog(
         update_data["content"] = content
     if type is not None:
         update_data["type"] = type
+    # The admin form always sends these two (empty string when the post is
+    # not part of a series), so an explicit "" here means "detach from the
+    # series" rather than "field omitted" - unlike `type` above, this field
+    # can be cleared once set.
+    if series_name is not None:
+        update_data["series_name"] = series_name or None
+    if series_part is not None:
+        if series_part == "":
+            update_data["series_part"] = None
+        else:
+            try:
+                update_data["series_part"] = int(series_part)
+            except ValueError:
+                pass
 
     if cover:
         # Handle new image upload
