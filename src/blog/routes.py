@@ -30,7 +30,24 @@ if _cloud_name and _cloud_key and _cloud_secret:
 
 # directory to store uploaded files (served from /uploads) - kept for backward compatibility
 UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+def _ensure_upload_dir() -> bool:
+    """Create the local uploads directory on demand.
+
+    Never do this at import time.  A serverless filesystem is read-only outside
+    /tmp, so a module-level mkdir raises OSError while this module is being
+    imported, which takes down every route in the app - not just uploads.  It
+    only stayed quiet before because the uploads/ directory was committed, so
+    mkdir(exist_ok=True) had nothing to create.  Cloudinary is the real upload
+    path in production; this local directory is the development fallback.
+    """
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError as exc:
+        print(f"[uploads] local upload directory unavailable: {exc}")
+        return False
 
 def _doc_to_dict(doc):
     if not doc:
@@ -128,6 +145,7 @@ def create_type(
                 ext = Path(image.filename).suffix
                 filename = f"type_{uuid.uuid4().hex}{ext}"
                 dest = UPLOAD_DIR / filename
+                _ensure_upload_dir()
                 with dest.open("wb") as f:
                     f.write(image.file.read())
                 image_url = f"/uploads/{filename}"
@@ -243,7 +261,7 @@ def upload_image(
             ext = Path(cover.filename).suffix
             filename = f"{uuid.uuid4().hex}{ext}"
             dest = UPLOAD_DIR / filename
-            UPLOAD_DIR.mkdir(exist_ok=True)  # Ensure uploads directory exists
+            _ensure_upload_dir()
             with dest.open("wb") as f:
                 f.write(cover.file.read())
             # Return full URL for local uploads (accessible from frontend)
@@ -290,6 +308,7 @@ def create_blog(
                 ext = Path(cover.filename).suffix
                 filename = f"{uuid.uuid4().hex}{ext}"
                 dest = UPLOAD_DIR / filename
+                _ensure_upload_dir()
                 with dest.open("wb") as f:
                     f.write(cover.file.read())
                 cover_url = f"/uploads/{filename}"
@@ -361,6 +380,7 @@ def update_blog(
                 ext = Path(cover.filename).suffix
                 filename = f"{uuid.uuid4().hex}{ext}"
                 dest = UPLOAD_DIR / filename
+                _ensure_upload_dir()
                 with dest.open("wb") as f:
                     f.write(cover.file.read())
                 update_data["cover_image"] = f"/uploads/{filename}"
